@@ -30,7 +30,7 @@ const NY: usize = 100;
 const DX: f64 = 1e-3;   
 const DT: f64 = 1e-5;   
 const STEPS: usize = 2000;
-const OUTPUT_INTERVAL: usize = 100;
+const OUTPUT_INTERVAL: usize = 10;
 
 // Toy parameters for EoS inspired by lattice QCD (NOT REAL DATA)
 const EPS_TRANS: f64 = 0.7;
@@ -105,7 +105,7 @@ fn update_step(
     let mut new_nu = vec![0.0; size];
     let mut new_e = vec![0.0; size];
 
-    let ma2 = 1e-4; // toy ALP mass^2
+    let ma2 = 1e-6; // toy ALP mass^2
     let mh2 = 1e-3; // toy Higgs-like mass^2
 
     for y in 0..NY {
@@ -157,7 +157,7 @@ fn main() {
     let mut metric_field = vec![1e-4; size];
     let mut gw_field = vec![1e-6; size];
 
-    let mut a = 1.0; // scale factor
+    let mut a = 32.0 * PI.powi(2); // scale factor
     let mut file = File::create("results.csv").unwrap();
     writeln!(
         file,

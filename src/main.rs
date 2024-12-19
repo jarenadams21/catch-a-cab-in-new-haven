@@ -29,7 +29,7 @@ const NX: usize = 100;
 const NY: usize = 100;
 const DX: f64 = 1e-3;   
 const DT: f64 = 1e-5;   
-const STEPS: usize = 2000;
+const STEPS: usize = 100;
 const OUTPUT_INTERVAL: usize = 10;
 
 // Toy parameters for EoS inspired by lattice QCD (NOT REAL DATA)

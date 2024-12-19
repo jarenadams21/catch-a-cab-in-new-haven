@@ -4,12 +4,14 @@ from matplotlib.widgets import Slider
 import glob, os
 import pandas as pd
 
-# Must match the Rust code constants
+# Must match Rust code constants
 NX = 64
 NY = 64
 NZ = 8
 NW = 4
 NUM_FIELDS = 9
+
+# Fields: correspond exactly to Rust layout
 field_names = [
     "Photon Density",
     "Axion Density",
@@ -19,9 +21,10 @@ field_names = [
     "Torsion XX",
     "Torsion XY",
     "Torsion XZ",
-    "Chiral-Odd Component"
+    "Chiral-Odd Component (CP Sensitive)"
 ]
 
+# Choose colormaps that highlight subtle differences
 cmaps = ['inferno', 'plasma', 'magma', 'viridis', 'cividis', 'Greys', 'RdBu', 'PiYG', 'coolwarm']
 
 if not os.path.exists("results.csv"):
@@ -46,26 +49,22 @@ for fname in files:
 data = np.array(data_list) # shape: (num_times, NUM_FIELDS, NW, NZ, NY, NX)
 num_times = data.shape[0]
 
-# Initial indices
-t_idx = 0
-w_idx = 0
-z_idx = 0
+# We focus on photon, axion, neutrino, energy, metric for initial view
+fields_to_show = [0,1,2,3,4]
 
 fig, axes = plt.subplots(2,5, figsize=(20,8))
 axes = axes.flatten()
 
-# We'll visualize a subset of fields for clarity
-# Let's pick Photon, Axion, Neutrino, Energy, Metric for main visualization
-fields_to_show = [0,1,2,3,4]  # first five fields
 ims = []
+t_idx = 0
+w_idx = 0
+z_idx = 0
 for i, f_id in enumerate(fields_to_show):
-    # Slice initial W,Z
     im = axes[i].imshow(data[t_idx, f_id, w_idx, z_idx, :, :], origin='lower', cmap=cmaps[f_id])
     axes[i].set_title(field_names[f_id])
     fig.colorbar(im, ax=axes[i])
     ims.append(im)
 
-# Last subplot for scale factor
 ax_a = axes[-1]
 ax_a.plot(time, a_scale, label="Scale Factor a(t)")
 ax_a.set_title("Scale Factor")
@@ -75,9 +74,8 @@ ax_a.grid(True)
 ax_a.legend()
 
 plt.tight_layout(rect=[0,0,1,0.95])
-fig.suptitle("5D Field Visualization (Tarski-Boltzmann, EC Torsion, SM Extension)")
+fig.suptitle("5D Field Visualization: Abelian & Non-Abelian Structures\n(Tarski-Boltzmann, EC Torsion, CP-Parity Extensions)")
 
-# Sliders for time, W slice, Z slice
 ax_time = plt.axes([0.2, 0.01, 0.6, 0.02], facecolor='lightgoldenrodyellow')
 time_slider = Slider(ax=ax_time, label='Time', valmin=0, valmax=num_times-1, valinit=0, valstep=1)
 
@@ -99,5 +97,5 @@ time_slider.on_changed(update)
 w_slider.on_changed(update)
 z_slider.on_changed(update)
 
-print("Visualizing complex 5D dataset with Tarski-Boltzmann measure, EC torsion, and SM extension fields.")
+print("Visualization ready. Showing 5D slices with CP-sensitive torsion and measure-preserving transformations.")
 plt.show()

@@ -1,52 +1,35 @@
 use std::fs::{File, create_dir_all};
-use std::io::{Write, BufReader, BufRead, BufWriter};
+use std::io::{Write, BufWriter};
 use std::error::Error;
 use std::path::Path;
-use std::f64::consts::PI;
+use std::{env};
 use rand::Rng;
-use serde::{Deserialize};
+use serde::Deserialize;
+use std::f64::consts::{PI, E};
 
 // -----------------------------------
 // Constants and Configuration
 // -----------------------------------
 const NX: usize = 64;
 const NY: usize = 64;
-const NZ: usize = 8;   // 3rd spatial dimension
-const NW: usize = 4;   // 5th dimension (compact)
-const DX: f64 = 5e-4;
-const DT: f64 = 5e-6;
-const STEPS: usize = 500;
-const OUTPUT_INTERVAL: usize = 50;
+const NZ: usize = 8;   // 3D space
+const NW: usize = 4;   // extra dimension
+const DX: f64 = 5e-4; // 5e-4
+const DT: f64 = 1.6726219 * 5e6; // 5e-6
+const STEPS: usize = 14;
+const OUTPUT_INTERVAL: usize = 1;
+const CASIMIR_COUPLING: f64 = 1.3e-27; // J·m^3
+const r: f64 = 1e-9; // Separation distance in meters (1 nm)
 
 const NUM_FIELDS: usize = 9; 
-// Fields indexing layout (per grid point):
-// 0: photon distribution
-// 1: axion distribution
-// 2: neutrino distribution
-// 3: energy density
-// 4: metric perturbation
-// 5: torsion_xx
-// 6: torsion_xy
-// 7: torsion_xz
-// 8: chiral_odd_component (to test CP-violation / symmetry breaking)
+// Field layout per point: [photon, axion, neutrino, energy, metric, torsion_xx, torsion_xy, torsion_xz, chiral_odd]
 
-// Coupling constants & parameters
-const COUPLING_PH_AX: f64 = 1e-3;
-const COUPLING_AX_NU: f64 = 1e-4;
-const TORSION_STRENGTH: f64 = 1e-3;
-const LIGHT_SPEED: f64 = 1.0; // dimensionless
-const G_NEWTON: f64 = 6.7e-11; // dimensionful, scaled down
-const RUNGE_KUTTA_STAGES: usize = 4;
-
-// -----------------------------------
-// Data Structures
-// -----------------------------------
-
-#[derive(Debug, Deserialize)]
-struct DecayMode {
-    products: String,
-    branching_ratio: f64,
-}
+// Coupling constants & parameters (BSM inspired)
+const COUPLING_PH_AX: f64 = 1e-3;  // Photon <-> Axion
+const COUPLING_AX_NU: f64 = 1e-4;  // Axion <-> Neutrino
+const TORSION_STRENGTH: f64 = 1e-6; 
+const LIGHT_SPEED: f64 = 2.99 * 2.99 * 2.99 * 2.99; 
+const G_NEWTON: f64 = 6.7e-11; 
 
 #[derive(Debug, Deserialize)]
 struct Meson {
@@ -58,8 +41,7 @@ struct Meson {
     decay_modes: String,
 }
 
-// Unified field data structure for a single time step
-// Stored as a 5D array flattened: dimension ordering: (W, Z, Y, X, field)
+// Unified field data structure
 struct FieldData {
     data: Vec<f64>,
 }
@@ -69,22 +51,23 @@ impl FieldData {
         let size = NX * NY * NZ * NW * NUM_FIELDS;
         let mut data = vec![0.0; size];
         
-        // Initialize fields with some physically motivated setup
-        // Photon ~0.01, Axion ~0.005, Neutrino ~0.001, energy ~1.0, others ~0
+        // Initial conditions: 
+        // Photon ~0.01, Axion ~0.005, Neutrino ~0.001, Energy ~1.0
         for w in 0..NW {
             for z in 0..NZ {
                 for y in 0..NY {
                     for x in 0..NX {
-                        let idx = Self::fidx(x,y,z,w,0);
-                        data[idx + 0] = 0.01; // photon
-                        data[idx + 1] = 0.005; // axion
-                        data[idx + 2] = 0.001; // neutrino
-                        data[idx + 3] = 1.0;   // energy
-                        data[idx + 4] = 0.0;   // metric
-                        data[idx + 5] = 0.0;   // torsion_xx
-                        data[idx + 6] = 0.0;   // torsion_xy
-                        data[idx + 7] = 0.0;   // torsion_xz
-                        data[idx + 8] = 0.0;   // chiral_odd_component
+                        let base = Self::fidx(x,y,z,w,0);
+                        data[base+0] = 0.01;  // photon
+                        data[base+1] = 0.005; // axion
+                        data[base+2] = 0.001; // neutrino
+                        data[base+3] = 1.0;   // energy density
+                        // metric & torsion start at 0
+                        data[base+4] = 0.0;   // metric perturbation
+                        data[base+5] = 0.0;   // torsion_xx
+                        data[base+6] = 0.0;   // torsion_xy
+                        data[base+7] = 0.0;   // torsion_xz
+                        data[base+8] = (1.0/137.0) * PI * E; // (112.0/137.0 * PI * E).sqrt().powi(256); // Fine-structure constant * pi * e
                     }
                 }
             }
@@ -108,21 +91,27 @@ impl FieldData {
     }
 }
 
-// -----------------------------------
-// External Data Loading: Mesons
-// -----------------------------------
-
+// Load meson data from CSV
 fn load_mesons(file_path: &str) -> Result<Vec<Meson>, Box<dyn Error>> {
-    let mut rdr = csv::Reader::from_path(file_path)?;
+    // Let the reader know we have headers
+    let mut rdr = csv::ReaderBuilder::new()
+        .has_headers(true)
+        .from_path(file_path)?;
+
     let mut mesons = Vec::new();
+
+    // Skip the headers automatically handled by CSV reader
     for result in rdr.records() {
         let record = result?;
-        let name = record.get(0).unwrap().to_string();
-        let mass: f64 = record.get(1).unwrap().parse()?;
-        let spin: u8 = record.get(2).unwrap().parse()?;
-        let quark_content = record.get(3).unwrap().to_string();
-        let lifetime: f64 = record.get(4).unwrap().parse()?;
-        let decay_str = record.get(5).unwrap().to_string();
+
+        // Indices now refer to columns after the header has been read
+        let name = record.get(0).ok_or("Missing name field")?.to_string();
+        let mass: f64 = record.get(1).ok_or("Missing mass field")?.parse()?;
+        let spin: u8 = record.get(2).ok_or("Missing spin field")?.parse()?;
+        let quark_content = record.get(3).ok_or("Missing quark_content field")?.to_string();
+        let lifetime: f64 = record.get(4).ok_or("Missing lifetime field")?.parse()?;
+        let decay_str = record.get(5).ok_or("Missing decay_modes field")?.to_string();
+
         mesons.push(Meson {
             name,
             mass,
@@ -132,11 +121,11 @@ fn load_mesons(file_path: &str) -> Result<Vec<Meson>, Box<dyn Error>> {
             decay_modes: decay_str,
         });
     }
+
     Ok(mesons)
 }
 
 fn parse_decay_modes(decay_str: &str) -> Vec<(Vec<String>, f64)> {
-    // decay_str example: "mu+ νmu:99.987, e+ νe:0.013"
     let mut modes = Vec::new();
     for part in decay_str.split(',') {
         let p = part.trim();
@@ -153,7 +142,6 @@ fn parse_decay_modes(decay_str: &str) -> Vec<(Vec<String>, f64)> {
     modes
 }
 
-// Simulate meson decay to produce neutrinos or other fields
 fn simulate_decay(meson: &Meson) -> Option<Vec<String>> {
     let modes = parse_decay_modes(&meson.decay_modes);
     let mut rng = rand::thread_rng();
@@ -168,33 +156,23 @@ fn simulate_decay(meson: &Meson) -> Option<Vec<String>> {
     None
 }
 
-// -----------------------------------
-// Physics Kernels
-// -----------------------------------
-
-// Implement a measure-preserving transformation for photon-axion-neutrino fields
+// Measure-preserving transform: photon <-> axion <-> neutrino
 fn measure_preserving_transform(fields:&mut FieldData) {
-    // For each point, apply balanced transformations:
-    // photon -> axion -> neutrino -> photon loop
-    // Adjust so that total integral is preserved.
-    let size = NX*NY*NZ*NW;
-    for idx_3d in 0..size {
+    let size_3d = NX*NY*NZ*NW;
+    for idx_3d in 0..size_3d {
         let base = idx_3d*NUM_FIELDS;
         let ph = fields.data[base+0];
         let ax = fields.data[base+1];
         let nu = fields.data[base+2];
 
-        // photon to axion
         let delta_p_to_a = COUPLING_PH_AX * ph * DT;
         let ph_new = ph - delta_p_to_a;
         let ax_new = ax + delta_p_to_a;
 
-        // axion to neutrino
         let delta_a_to_n = COUPLING_AX_NU * ax_new * DT;
         let ax_new2 = ax_new - delta_a_to_n;
         let nu_new = nu + delta_a_to_n;
 
-        // neutrino back to photon (to close loop)
         let delta_n_to_p = COUPLING_AX_NU * nu_new * 0.5 * DT;
         let nu_final = nu_new - delta_n_to_p;
         let ph_final = ph_new + delta_n_to_p;
@@ -205,8 +183,7 @@ fn measure_preserving_transform(fields:&mut FieldData) {
     }
 }
 
-// Higher-order finite difference approximations for spatial derivatives
-// We'll implement a 4th-order accurate Laplacian in (X,Y,Z) and a finite difference in W as well.
+// Periodic indexing
 fn periodic_idx(i: isize, max: usize) -> usize {
     let mut ii = i;
     while ii < 0 {
@@ -215,8 +192,8 @@ fn periodic_idx(i: isize, max: usize) -> usize {
     (ii as usize) % max
 }
 
+// 4th order Laplacian
 fn laplacian_4th(arr: &FieldData, field_id: usize) -> FieldData {
-    // Compute 4th-order spatial Laplacian in X,Y,Z for each W slice
     let mut res = FieldData{data: arr.data.clone()};
     for w in 0..NW {
         for z in 0..NZ {
@@ -266,57 +243,22 @@ fn laplacian_4th(arr: &FieldData, field_id: usize) -> FieldData {
     res
 }
 
-// Simple finite difference in W-dimension (compact dimension)
-fn derivative_w(arr: &FieldData, field_id: usize) -> FieldData {
-    let mut res = FieldData{data: arr.data.clone()};
-    for w in 0..NW {
-        let wp = (w+1)%NW;
-        let wm = if w == 0 { NW-1 } else { w-1 };
-        for z in 0..NZ {
-            for y in 0..NY {
-                for x in 0..NX {
-                    let cp = arr.get(x,y,z,wp,field_id);
-                    let cm = arr.get(x,y,z,wm,field_id);
-                    let dw = (cp - cm)/(2.0*DX); // same DX scale for simplicity
-                    res.set(x,y,z,w, field_id, dw);
-                }
-            }
-        }
-    }
-    res
-}
-
-// Boltzmann update includes collision integrals and momentum dependence (conceptual)
-fn boltzmann_update_momentum(/* parameters */) {
-    // This would integrate over momentum space, updating f_neutrino and f_axion distributions.
-    // Complexity omitted due to length. Here you'd implement a momentum grid and collision integrals.
-}
-
-// Runge-Kutta time stepping for PDE updates
 fn time_step_rk4(fields: &mut FieldData) {
-    // Example: apply laplacian diffusion to photon field as a test
-    // Similarly integrate metric/torsion evolution. 
-    // Realistically, you'd have a system of PDEs and solve them simultaneously.
-    
-    // For demonstration: photon field diffusion
+    // Just do photon diffusion as test PDE
     let photon_id = 0;
-    // We'll do photon diffusion as a stand-in PDE:
-    // d(photon)/dt = D * Laplacian(photon)
     let D = 1e-3;
 
     // k1
     let lap_p = laplacian_4th(fields, photon_id);
     let mut k1 = FieldData{data:vec![0.0;fields.data.len()]};
-    for i in 0..fields.data.len()/(NUM_FIELDS) {
+    for i in 0..fields.data.len()/NUM_FIELDS {
         let base = i*NUM_FIELDS;
-        let p = fields.data[base+photon_id];
         let lp = lap_p.data[base+photon_id];
         k1.data[base+photon_id] = D * lp;
     }
 
-    // apply k1/2 step
     let mut f_temp = FieldData{data:fields.data.clone()};
-    for i in 0..fields.data.len()/(NUM_FIELDS) {
+    for i in 0..fields.data.len()/NUM_FIELDS {
         let base = i*NUM_FIELDS;
         f_temp.data[base+photon_id] += k1.data[base+photon_id]*(DT/2.0);
     }
@@ -324,15 +266,14 @@ fn time_step_rk4(fields: &mut FieldData) {
     // k2
     let lap_p2 = laplacian_4th(&f_temp, photon_id);
     let mut k2 = FieldData{data:vec![0.0;fields.data.len()]};
-    for i in 0..fields.data.len()/(NUM_FIELDS) {
+    for i in 0..fields.data.len()/NUM_FIELDS {
         let base = i*NUM_FIELDS;
         let lp2 = lap_p2.data[base+photon_id];
         k2.data[base+photon_id] = D*lp2;
     }
 
-    // apply k2/2
     let mut f_temp2 = FieldData{data:fields.data.clone()};
-    for i in 0..fields.data.len()/(NUM_FIELDS) {
+    for i in 0..fields.data.len()/NUM_FIELDS {
         let base = i*NUM_FIELDS;
         f_temp2.data[base+photon_id] += k2.data[base+photon_id]*(DT/2.0);
     }
@@ -340,15 +281,14 @@ fn time_step_rk4(fields: &mut FieldData) {
     // k3
     let lap_p3 = laplacian_4th(&f_temp2, photon_id);
     let mut k3 = FieldData{data:vec![0.0;fields.data.len()]};
-    for i in 0..fields.data.len()/(NUM_FIELDS) {
+    for i in 0..fields.data.len()/NUM_FIELDS {
         let base = i*NUM_FIELDS;
         let lp3 = lap_p3.data[base+photon_id];
         k3.data[base+photon_id] = D*lp3;
     }
 
-    // apply k3 fully
     let mut f_temp3 = FieldData{data:fields.data.clone()};
-    for i in 0..fields.data.len()/(NUM_FIELDS) {
+    for i in 0..fields.data.len()/NUM_FIELDS {
         let base = i*NUM_FIELDS;
         f_temp3.data[base+photon_id] += k3.data[base+photon_id]*DT;
     }
@@ -356,21 +296,18 @@ fn time_step_rk4(fields: &mut FieldData) {
     // k4
     let lap_p4 = laplacian_4th(&f_temp3, photon_id);
     let mut k4 = FieldData{data:vec![0.0;fields.data.len()]};
-    for i in 0..fields.data.len()/(NUM_FIELDS) {
+    for i in 0..fields.data.len()/NUM_FIELDS {
         let base = i*NUM_FIELDS;
         let lp4 = lap_p4.data[base+photon_id];
         k4.data[base+photon_id] = D*lp4;
     }
 
     // combine
-    for i in 0..fields.data.len()/(NUM_FIELDS) {
+    for i in 0..fields.data.len()/NUM_FIELDS {
         let base = i*NUM_FIELDS;
         fields.data[base+photon_id] += (DT/6.0)*(k1.data[base+photon_id] + 2.0*k2.data[base+photon_id] +
                                                  2.0*k3.data[base+photon_id] + k4.data[base+photon_id]);
     }
-
-    // Similar steps would be applied to axion, neutrino, and metric/torsion fields with their respective PDEs.
-    // Omitted for brevity.
 }
 
 fn compute_averages(fields: &FieldData) -> (f64,f64,f64,f64) {
@@ -387,17 +324,37 @@ fn compute_averages(fields: &FieldData) -> (f64,f64,f64,f64) {
     (sum_ph/norm, sum_ax/norm, sum_nu/norm, sum_e/norm)
 }
 
-// Update metric and torsion fields based on neutrino spin density
+// Einstein-Cartan torsion and metric update
 fn update_ec_torsion_metric(fields: &mut FieldData) {
     let size_4d = NX*NY*NZ*NW;
     for i in 0..size_4d {
         let base = i*NUM_FIELDS;
         let nu = fields.data[base+2];
-        // Simple coupling: torsion_xx ~ torsion_xx + TORSION_STRENGTH * nu * DT
-        fields.data[base+5] += TORSION_STRENGTH * nu * DT * 1e-6; // torsion_xx
-        fields.data[base+6] += TORSION_STRENGTH * nu * DT * 1e-6; // torsion_xy
-        // update metric:
+        fields.data[base+5] += TORSION_STRENGTH * nu * DT * 1e-6;
+        fields.data[base+6] += TORSION_STRENGTH * nu * DT * 1e-6;
         fields.data[base+4] += (fields.data[base+5] + fields.data[base+6]) * DT * 1e-2;
+    }
+}
+
+fn update_chiral_odd(fields: &mut FieldData) {
+    let size_4d = NX * NY * NZ * NW;
+    for idx_3d in 0..size_4d {
+        let base = idx_3d * NUM_FIELDS;
+
+        // Fetch relevant fields
+        let torsion_xx = fields.data[base + 5];
+        let torsion_xy = fields.data[base + 6];
+        let metric = fields.data[base + 4];
+        let neutrino_density = fields.data[base + 2];
+
+        // Dynamic update for chiral odd component
+        let delta_chiral = TORSION_STRENGTH * (torsion_xx - torsion_xy)
+            - 0.01 * metric
+            + 1e-3 * neutrino_density;
+
+        //fields.data[base + 8] += delta_chiral * DT;
+        let casimir_effect = CASIMIR_COUPLING / ((r + DX).powi(4));
+        fields.data[base + 8] += casimir_effect * DT;
     }
 }
 
@@ -414,40 +371,64 @@ fn write_snapshot(step: usize, fields:&FieldData) -> Result<(),Box<dyn Error>> {
     Ok(())
 }
 
+fn compute_chiral_avg(fields: &FieldData) -> f64 {
+    let size_4d = NX * NY * NZ * NW;
+    let mut sum_chiral = 0.0;
+    for idx_3d in 0..size_4d {
+        let base = idx_3d * NUM_FIELDS;
+        sum_chiral += fields.data[base + 8];
+    }
+    sum_chiral / size_4d as f64
+}
+
 fn main() -> Result<(),Box<dyn Error>> {
-    // Attempt to load meson data for realistic decay processes
-    // (If file not found, we just proceed)
-    let mesons = load_mesons("mesons.csv").unwrap_or_else(|_| Vec::new());
+
+    let current_dir = env::current_dir()?;
+    println!("Current working directory: {:?}", current_dir);
+
+    // Attempt to load meson data
+    let mesons = match load_mesons("mesons.csv") {
+        Ok(m) => {
+            if m.is_empty() {
+                println!("Warning: mesons.csv loaded but no mesons found!");
+            } else {
+                println!("Meson data loaded successfully. Found {} mesons:", m.len());
+                for mes in &m {
+                    println!(" - {}: mass={} MeV/c², lifetime={} s", mes.name, mes.mass, mes.lifetime);
+                }
+            }
+            m
+        },
+        Err(e) => {
+            eprintln!("No meson data found or failed to load mesons.csv. Error was: {}", e);
+            Vec::new()
+        }
+    };    
 
     let mut fields = FieldData::new();
-    let mut scale_factor = 1.0;
+    update_chiral_odd(&mut fields);
+    let mut scale_factor = ((8.0 * PI.powi(2)) * (r.powi(2))) / 15.0 * (-((8.0 * PI.powi(2)) * (r.powi(2))) / 15.0).sqrt();
 
     let mut file = BufWriter::new(File::create("results.csv")?);
     writeln!(file,"time,a,avg_photon,avg_axion,avg_neutrino,avg_energy")?;
 
     for step in 0..STEPS {
-        // 1. Measure-preserving transformation among photon, axion, neutrino
         measure_preserving_transform(&mut fields);
-
-        // 2. Einstein-Cartan torsion/metric update
         update_ec_torsion_metric(&mut fields);
-
-        // 3. Solve PDEs for distributions using RK4
         time_step_rk4(&mut fields);
 
-        // Could also integrate meson decays:
-        // For demonstration, randomly pick a meson and simulate a decay:
+        // Meson decay if available
         if !mesons.is_empty() {
             let mut rng = rand::thread_rng();
             let m_idx = rng.gen_range(0..mesons.len());
             if let Some(prods) = simulate_decay(&mesons[m_idx]) {
-                // Suppose meson decays produce neutrinos: increase neutrino field slightly
-                // In a real scenario, map decay products to field increments
+                // Add neutrinos or photons uniformly
                 let size_4d = NX*NY*NZ*NW;
-                // Add neutrinos uniformly as a crude approximation
                 for i in 0..size_4d {
                     let base = i*NUM_FIELDS;
                     for p in &prods {
+                        // Print confirmation that decay products are applied
+                        println!("Injected decay product {} at step {}", p, step);
                         match p.as_str() {
                             "νμ" | "νe" | "ντ" => {
                                 fields.data[base+2] += 1e-6;
@@ -462,14 +443,14 @@ fn main() -> Result<(),Box<dyn Error>> {
             }
         }
 
-        // Compute averages
         let (avg_ph, avg_ax, avg_nu, avg_e) = compute_averages(&fields);
+        let avg_chiral = compute_chiral_avg(&fields);
 
-        // Update scale factor (toy Friedmann)
-        scale_factor += DT * scale_factor * avg_e.sqrt();
+        scale_factor += DT * scale_factor * avg_e.sqrt() * avg_chiral.sqrt();
 
         let time = step as f64 * DT;
-        writeln!(file, "{},{},{},{},{},{}", time, scale_factor, avg_ph, avg_ax, avg_nu, avg_e)?;
+
+        writeln!(file, "{},{},{},{},{},{},{}", time, scale_factor, avg_ph, avg_ax, avg_nu, avg_e, avg_chiral)?;
 
         if step % OUTPUT_INTERVAL == 0 {
             println!("Step {}: a={:.5}, ph={:.5}, ax={:.5}, nu={:.5}, E={:.5}",
@@ -479,6 +460,5 @@ fn main() -> Result<(),Box<dyn Error>> {
     }
 
     println!("Simulation complete. Results in results.csv and snapshots/");
-
     Ok(())
 }

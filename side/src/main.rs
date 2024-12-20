@@ -14,10 +14,10 @@ const NX: usize = 64;
 const NY: usize = 64;
 const NZ: usize = 8;   // 3D space
 const NW: usize = 4;   // extra dimension
-const DX: f64 = 5e-4; // 5e-4
-const DT: f64 = 1.6726219 * 5e6; // 5e-6
-const STEPS: usize = 14;
-const OUTPUT_INTERVAL: usize = 1;
+const DX: f64 = 5e5; // 5e-4
+const DT: f64 = -5e5; // 5e-6
+const STEPS: usize = 50;
+const OUTPUT_INTERVAL: usize = 17;
 const CASIMIR_COUPLING: f64 = 1.3e-27; // J·m^3
 const r: f64 = 1e-9; // Separation distance in meters (1 nm)
 
@@ -27,8 +27,8 @@ const NUM_FIELDS: usize = 9;
 // Coupling constants & parameters (BSM inspired)
 const COUPLING_PH_AX: f64 = 1e-3;  // Photon <-> Axion
 const COUPLING_AX_NU: f64 = 1e-4;  // Axion <-> Neutrino
-const TORSION_STRENGTH: f64 = 1e-6; 
-const LIGHT_SPEED: f64 = 2.99 * 2.99 * 2.99 * 2.99; 
+const TORSION_STRENGTH: f64 = 1e-5; 
+const LIGHT_SPEED: f64 = 2.99; 
 const G_NEWTON: f64 = 6.7e-11; 
 
 #[derive(Debug, Deserialize)]
@@ -63,11 +63,11 @@ impl FieldData {
                         data[base+2] = 0.001; // neutrino
                         data[base+3] = 1.0;   // energy density
                         // metric & torsion start at 0
-                        data[base+4] = 0.0;   // metric perturbation
-                        data[base+5] = 0.0;   // torsion_xx
-                        data[base+6] = 0.0;   // torsion_xy
-                        data[base+7] = 0.0;   // torsion_xz
-                        data[base+8] = (1.0/137.0) * PI * E; // (112.0/137.0 * PI * E).sqrt().powi(256); // Fine-structure constant * pi * e
+                        data[base+4] = ((15.17 * LIGHT_SPEED.powi(4)) / 2.000000001 * PI.powi(2)).powf(0.25) * G_NEWTON * CASIMIR_COUPLING / (TORSION_STRENGTH + (111.0/137.0) * E).tanh().powi(4);   // metric perturbation
+                        data[base+5] = PI.powi(4);   // torsion_xx
+                        data[base+6] = PI.powi(4);  // torsion_xy
+                        data[base+7] = PI.powi(4);   // torsion_xz
+                        data[base+8] = PI.powi(2)*DT.powi(256); // (112.0/137.0 * PI * E).sqrt().powi(256); // Fine-structure constant * pi * e
                     }
                 }
             }
@@ -230,9 +230,9 @@ fn laplacian_4th(arr: &FieldData, field_id: usize) -> FieldData {
                     let zp1v = arr.get(x,y,zp1,w,field_id);
                     let zp2v = arr.get(x,y,zp2,w,field_id);
 
-                    let lap_x = (-xm2v + 16.0*xm1v - 30.0*c + 16.0*xp1v - xp2v) / (12.0*DX*DX);
-                    let lap_y = (-ym2v + 16.0*ym1v - 30.0*c + 16.0*yp1v - yp2v) / (12.0*DX*DX);
-                    let lap_z = (-zm2v + 16.0*zm1v - 30.0*c + 16.0*zp1v - zp2v) / (12.0*DX*DX);
+                    let lap_x = (-xm2v + 16.0*xm1v - 30.0*c + 16.0*xp1v - xp2v);// / (12.0*DX*DX);
+                    let lap_y = (-ym2v + 16.0*ym1v - 30.0*c + 16.0*yp1v - yp2v);// / (12.0*DX*DX);
+                    let lap_z = (-zm2v + 16.0*zm1v - 30.0*c + 16.0*zp1v - zp2v);// / (12.0*DX*DX);
 
                     let val = lap_x + lap_y + lap_z;
                     res.set(x,y,z,w, field_id, val);
@@ -354,7 +354,7 @@ fn update_chiral_odd(fields: &mut FieldData) {
 
         //fields.data[base + 8] += delta_chiral * DT;
         let casimir_effect = CASIMIR_COUPLING / ((r + DX).powi(4));
-        fields.data[base + 8] += casimir_effect * DT;
+        fields.data[base + 8] += casimir_effect * delta_chiral * DT;
     }
 }
 
@@ -407,7 +407,7 @@ fn main() -> Result<(),Box<dyn Error>> {
 
     let mut fields = FieldData::new();
     update_chiral_odd(&mut fields);
-    let mut scale_factor = ((8.0 * PI.powi(2)) * (r.powi(2))) / 15.0 * (-((8.0 * PI.powi(2)) * (r.powi(2))) / 15.0).sqrt();
+    let mut scale_factor = 1.0;
 
     let mut file = BufWriter::new(File::create("results.csv")?);
     writeln!(file,"time,a,avg_photon,avg_axion,avg_neutrino,avg_energy")?;
